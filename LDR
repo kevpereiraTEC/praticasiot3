@@ -1,0 +1,17 @@
+#define LDR_PIN 34  // Pino ADC do ESP32
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(LDR_PIN, INPUT);
+
+  Serial.println("Leitura do LDR iniciada...");
+}
+
+void loop() {
+  int ldrValue = analogRead(LDR_PIN); // 0 a 4095 no ESP32
+
+  Serial.print("Valor LDR: ");
+  Serial.println(ldrValue);
+
+  delay(500); // leitura a cada 0.5s
+}
