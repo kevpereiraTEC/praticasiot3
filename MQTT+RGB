@@ -1,0 +1,116 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// ==== CONFIG Wi-Fi ====
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
+// ==== CONFIG MQTT ====
+const char* mqtt_server = "broker.hivemq.com";
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// ==== PINOS LED RGB (CÁTODO COMUM) ====
+#define PIN_R 26
+#define PIN_G 27
+#define PIN_B 25
+
+// ===== FUNÇÃO PARA ACENDER COR =====
+void setColor(int r, int g, int b) {
+  analogWrite(PIN_R, r);
+  analogWrite(PIN_G, g);
+  analogWrite(PIN_B, b);
+}
+
+// ===== TRATAR MENSAGENS RECEBIDAS DO MQTT =====
+void callback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+  for (int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+
+  msg.toLowerCase();
+  Serial.print("Comando recebido: ");
+  Serial.println(msg);
+
+  if (msg == "liga") {
+    setColor(255, 255, 255);
+  }
+  else if (msg == "desliga") {
+    setColor(0, 0, 0);
+  }
+  else if (msg == "vermelho") {
+    setColor(255, 0, 0);
+  }
+  else if (msg == "verde") {
+    setColor(0, 255, 0);
+  }
+  else if (msg == "azul") {
+    setColor(0, 0, 255);
+  }
+  else if (msg == "amarelo") {
+    setColor(255, 255, 0);
+  }
+  else if (msg == "roxo") {
+    setColor(150, 0, 150);
+  }
+  else {
+    Serial.println("Comando desconhecido!");
+  }
+}
+
+// ===== CONECTAR NO WI-FI =====
+void setup_wifi() {
+  Serial.print("Conectando ao WiFi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi conectado!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+// ===== RECONEXÃO MQTT =====
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Conectando ao MQTT...");
+
+    if (client.connect("ESP32_RGB")) {
+      Serial.println("Conectado!");
+      client.subscribe("esp32/ledrgb/comandos");
+    } else {
+      Serial.print("Falhou, rc=");
+      Serial.print(client.state());
+      Serial.println(" tentando novamente em 2s...");
+      delay(2000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Configuração dos pinos RGB
+  pinMode(PIN_R, OUTPUT);
+  pinMode(PIN_G, OUTPUT);
+  pinMode(PIN_B, OUTPUT);
+
+  // Inicia apagado
+  setColor(0, 0, 0);
+
+  // Conecta Wi-Fi
+  setup_wifi();
+
+  // Configura MQTT
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+}
+
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+}
