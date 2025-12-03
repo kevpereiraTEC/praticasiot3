@@ -1,0 +1,72 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+// --- WiFi ---
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
+// --- Firebase ---
+const char* FIREBASE_HOST = "https://aplicacao1-2c55b-default-rtdb.firebaseio.com/";
+String firebasePathLeituras = "leituras.json"; // <- Caminho no banco
+
+// Conecta ao WiFi
+void conectarWiFi() {
+  Serial.begin(115200);
+  Serial.print("Conectando ao WiFi: ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(300);
+    if (millis() - t0 > 20000) {
+      Serial.println("\nFalha ao conectar WiFi. Reiniciando...");
+      delay(2000);
+      ESP.restart();
+    }
+  }
+
+  Serial.println("\nWiFi conectado!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Envia dados ao Firebase
+void enviarLeiturasParaFirebase(float temp, int luz, String cor, String estadoSistemaStr) {
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    HTTPClient http;
+    String url = String(FIREBASE_HOST) + firebasePathLeituras;
+
+    // JSON
+    String json = "{";
+    json += "\"timestamp\":{ \".sv\":\"timestamp\" },";
+    json += "\"temperatura_c\":" + String(temp, 1) + ",";
+    json += "\"luminosidade_raw\":" + String(luz) + ",";
+    json += "\"cor_led\":\"" + cor + "\",";
+    json += "\"estado_sistema\":\"" + estadoSistemaStr + "\"";
+    json += "}";
+
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+
+    int code = http.POST(json);
+
+    if (code >= 200 && code < 300) {
+      Serial.println("✔ Firebase OK");
+    } else {
+      Serial.print("❌ Erro Firebase HTTP: ");
+      Serial.println(code);
+      Serial.println("Body: " + http.getString());
+    }
+
+    http.end();
+
+  } else {
+    Serial.println("WiFi desconectado – não enviou.");
+  }
+}
