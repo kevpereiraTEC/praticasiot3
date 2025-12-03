@@ -1,0 +1,92 @@
+// ====== PINAGEM ======
+#define POT_PIN 34           // Potenciômetro (entrada analógica)
+#define LDR_PIN 35         // LDR (analógico)
+#define BUTTON_PIN 14        // Botão físico (liga/desliga)
+#define LED_R 27             // LED RGB - Vermelho
+#define LED_G 26             // LED RGB - Verde
+#define LED_B 25             // LED RGB - Azul
+
+// ====== VARIÁVEIS ======
+bool systemOn = true;        // Estado inicial do sistema
+bool lastButtonState = HIGH; // Para detectar clique
+unsigned long lastPrint = 0; // Timer para prints (5s)
+
+// ====== FUNÇÃO PARA DEFINIR COR DO LED ======
+void setColor(int r, int g, int b) {
+  analogWrite(LED_R, r);
+  analogWrite(LED_G, g);
+  analogWrite(LED_B, b);
+}
+
+// ====== FUNÇÃO PARA OBTER A COR A PARTIR DO POT ======
+String getColorName(int r, int g, int b) {
+  if (r > g && r > b) return "Vermelho";
+  if (g > r && g > b) return "Verde";
+  if (b > r && b > g) return "Azul";
+  return "Mistura (RGB)";
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Pinos
+  pinMode(POT_PIN, INPUT);
+  pinMode(LDR_PIN, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  pinMode(LED_R, OUTPUT);
+  pinMode(LED_G, OUTPUT);
+  pinMode(LED_B, OUTPUT);
+
+  setColor(0, 0, 0); // Começa apagado
+}
+
+void loop() {
+
+  // ===== LEITURA DO BOTÃO =====
+  bool buttonState = digitalRead(BUTTON_PIN);
+
+  if (buttonState == LOW && lastButtonState == HIGH) {
+    systemOn = !systemOn;
+    delay(200); // debounce
+  }
+  lastButtonState = buttonState;
+
+  // ===== LEITURA DO POTENCIÔMETRO =====
+  int potVal = analogRead(POT_PIN);     // 0 a 4095
+
+  // Converte para cor RGB (0–255)
+  int r = map(potVal, 0, 4095, 0, 255);
+  int g = map(potVal, 0, 4095, 255, 0);   // inverso
+  int b = (r + g) / 2;                    // roxo/rosa suave
+
+  // ===== LÓGICA DO SISTEMA =====
+  if (systemOn) {
+    setColor(r, g, b);
+  } else {
+    setColor(0, 0, 0); // Sistema OFF → LED apagado
+  }
+
+  // ===== SENSOR LDR =====
+  int ldrValue = analogRead(LDR_PIN);
+
+  // ===== PRINT A CADA 5 SEGUNDOS =====
+  if (millis() - lastPrint >= 5000) {
+    lastPrint = millis();
+
+    Serial.println("======== STATUS DO SISTEMA ========");
+    Serial.print("Sistema: ");
+    Serial.println(systemOn ? "ON" : "OFF");
+
+    Serial.print("Cor do LED: ");
+    if (systemOn) Serial.println(getColorName(r, g, b));
+    else Serial.println("LED desligado");
+
+    Serial.print("Valor LDR: ");
+    Serial.println(ldrValue);
+
+    Serial.println("===================================\n");
+  }
+
+  delay(10);
+}
