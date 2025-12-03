@@ -1,0 +1,31 @@
+#define PIN_BUTTON 14
+#define PIN_LED 2
+
+bool ledState = false;     // Estado atual do LED
+bool lastButtonState = HIGH;
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_BUTTON, INPUT_PULLUP); // usa pull-up interno
+
+  digitalWrite(PIN_LED, ledState);
+}
+
+void loop() {
+  bool buttonState = digitalRead(PIN_BUTTON);
+
+  // Detecta borda de descida (botão pressionado)
+  if (buttonState == LOW && lastButtonState == HIGH) {
+    ledState = !ledState;  // alterna estado
+    digitalWrite(PIN_LED, ledState);
+
+    Serial.print("LED agora está: ");
+    Serial.println(ledState ? "LIGADO" : "DESLIGADO");
+
+    delay(200); // debounce simples
+  }
+
+  lastButtonState = buttonState;
+}
