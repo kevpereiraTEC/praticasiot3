@@ -1,0 +1,445 @@
+// --- 1. Bibliotecas Necessárias ---
+#include <DHT.h>
+#include <WiFi.h>
+#include <HTTPClient.h> // Para Firebase
+
+// --- 2. Definições de Pinos e Sensores ---
+#define PINO_BOTAO 32    // Pino do botão (Input Pull-up) - LIGAÇÃO SOMENTE ENTRE PINO 32 E GND!
+#define PINO_DHT 19
+#define PINO_FOTOR 33    // Sensor de Luminosidade
+#define PINO_POT 34      // Potenciômetro
+
+#define PINO_R 25
+#define PINO_G 26
+#define PINO_B 27
+
+#define PINO_BUZZER 21
+
+#define TIPO_DHT DHT22
+DHT dht(PINO_DHT, TIPO_DHT);
+
+// --- 3. Credenciais Wi-Fi (PREENCHA AQUI!) ---
+const char* ssid = "Wokwi-GUEST"; 
+const char* password = ""; 
+
+// --- 4. Configurações Firebase (PREENCHA AQUI!) ---
+// O HOST DEVE TERMINAR COM UMA BARRA (/)
+const char* FIREBASE_HOST = "https://aplicacao1-2c55b-default-rtdb.firebaseio.com/"; 
+// Caminho para enviar as leituras (POST/PUT)
+String firebasePathLeituras = "/leituras.json"; 
+// Caminho para ler os comandos (GET)
+String firebasePathComandos = "/comandos.json"; 
+
+
+// --- 5. Variáveis de Estado ---
+bool sistemaLigado = false;
+// Variáveis para Debounce do Botão
+bool estadoBotaoAnterior = HIGH;
+unsigned long ultimoDebounceTime = 0;
+const unsigned long debounceDelay = 50; // 50ms para estabilizar
+
+unsigned long ultimoPrint = 0;
+unsigned long ultimoEnvioFirebase = 0; 
+const long intervaloEnvio = 5000; // 5000ms = 5 segundos
+
+// NOVAS VARIÁVEIS PARA RECEBIMENTO DE COMANDOS
+unsigned long ultimoPolling = 0; 
+const long intervaloPolling = 2000; // Polling de comandos a cada 2 segundos
+String comandoAnterior = ""; // Para evitar reprocessar o mesmo comando
+
+// --- Variáveis de Ativação/Desativação de Sensores (Comando) ---
+// Estado inicial é Ativo, exceto Buzzer que pode ser desligado na inicialização
+bool sensorTemperaturaAtivo = true;
+bool detectorAtivo = true;
+bool buzzerAtivo = false; // Começa desligado
+
+// Se seu LED for ânodo comum, mude para true
+bool anodoComum = false;
+// Variável para armazenar o nome da cor atual do LED
+String corLED = "Desligado"; 
+
+
+// ======== Funções Auxiliares ========
+
+// Conecta ao Wi-Fi 
+void conectarWiFi() {
+    Serial.print("Conectando ao WiFi: ");
+    Serial.println(ssid);
+    
+    WiFi.mode(WIFI_STA);    
+    WiFi.begin(ssid, password);
+    
+    unsigned long t0 = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+        Serial.print(".");
+        delay(300);
+        if (millis() - t0 > 20000) {    
+            Serial.println("\nFalha ao conectar WiFi (timeout). Reiniciando...");
+            delay(2000);
+            ESP.restart();  
+        }
+    }
+    Serial.println("\nWiFi conectado");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+}
+
+
+// Define a cor do LED e atualiza a variável global 'corLED'
+void setColor(int r, int g, int b, String nomeCor) {
+    if (anodoComum) {       // Inverte se LED for ânodo comum
+        r = 255 - r;
+        g = 255 - g;
+        b = 255 - b;
+    }
+
+    analogWrite(PINO_R, r);
+    analogWrite(PINO_G, g);
+    analogWrite(PINO_B, b);
+    
+    corLED = nomeCor;
+}
+
+
+// ======== Envio via HTTP para o Google Firebase ========
+// Função para enviar os dados de leitura dos sensores e estado do sistema
+void enviarLeiturasParaFirebase(float temp, int luz, String cor, String estadoSistemaStr) {
+
+    if (WiFi.status() == WL_CONNECTED) {
+
+        HTTPClient http;
+        String url = String(FIREBASE_HOST) + firebasePathLeituras; 
+
+        // Cria o payload JSON
+        String json = "{";
+        json += "\"timestamp\":{ \".sv\":\"timestamp\" },"; 
+        json += "\"temperatura_c\":" + String(temp, 1) + ",";
+        json += "\"luminosidade_raw\":" + String(luz) + ",";
+        json += "\"cor_led\":\"" + cor + "\","; 
+        json += "\"estado_sistema\":\"" + estadoSistemaStr + "\"";
+        json += "}";
+
+        http.begin(url);
+        http.addHeader("Content-Type","application/json");
+
+        // Usamos POST para criar um novo registro (histórico)
+        int code = http.POST(json);
+
+        if (code >= 200 && code < 300) {
+            // Serial.print("Firebase OK (HTTP ");
+            // Serial.print(code);
+            // Serial.println(")");
+        } else {
+            Serial.print("Falha Firebase HTTP: ");
+            Serial.println(code);
+            String body = http.getString();
+            Serial.print("Resposta body: ");
+            Serial.println(body);
+        }
+
+        http.end();
+    } else {
+        Serial.println("WiFi nao conectado - nao vai enviar para Firebase");
+    }
+}
+
+// CORRIGIDO: Função para enviar um comando manual para o nó /comandos do Firebase
+void enviarComandoParaFirebase(String cmd) {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi nao conectado - nao vai enviar comando para Firebase");
+        return;
+    }
+    
+    HTTPClient http;
+    // URL para o nó 'comandos'
+    String url = String(FIREBASE_HOST) + firebasePathComandos; 
+
+    // Cria o payload JSON. Incluímos o timestamp para garantir que o nó seja atualizado
+    // e o sistema de polling reconheça a mudança (necessário para dashboards).
+    String json = "{";
+    json += "\"controle_manual\":\"" + cmd + "\","; 
+    json += "\"timestamp\":{ \".sv\":\"timestamp\" }"; // Adiciona timestamp do Firebase
+    json += "}";
+    
+    // DEBUG: Imprime a URL e o JSON que será enviado
+    Serial.print("DEBUG Envio: URL="); Serial.print(url);
+    Serial.print(", JSON="); Serial.println(json);
+
+
+    http.begin(url);
+    http.addHeader("Content-Type","application/json");
+
+    // Usamos PUT para substituir todo o nó '/comandos' com o novo comando e timestamp
+    int code = http.PUT(json); 
+
+    if (code >= 200 && code < 300) {
+        Serial.print("Comando '");
+        Serial.print(cmd);
+        Serial.print("' enviado para Firebase (PUT). HTTP: ");
+        Serial.println(code);
+    } else {
+        Serial.print("Falha ao enviar comando para Firebase HTTP: ");
+        Serial.println(code);
+        Serial.println(http.getString());
+    }
+
+    http.end();
+}
+
+
+// ======== Processamento do Comando Recebido (ou Gerado Localmente) ========
+void processarComando(String cmd) {
+    Serial.print("Processando Comando: ");
+    Serial.println(cmd);
+    
+    // Comandos de controle principal (Ligado/Desligado)
+    if (cmd == "Ligar") {
+        sistemaLigado = true;
+        // Reinicializa o estado das ativações quando o sistema é ligado
+        sensorTemperaturaAtivo = true;
+        detectorAtivo = true;
+        buzzerAtivo = false; 
+    } else if (cmd == "Desligar") {
+        sistemaLigado = false;
+        // Ao desligar, reseta o estado visual e desliga tudo
+        setColor(0, 0, 0, "Desligado"); 
+        noTone(PINO_BUZZER);
+        // Desativa todos os sensores também
+        sensorTemperaturaAtivo = false;
+        detectorAtivo = false;
+        buzzerAtivo = false;
+    } 
+    // Comandos de LED temporário (só funcionam se o sistema estiver Ligado)
+    else if (sistemaLigado) { 
+        if (cmd == "Vermelho") setColor(255, 0, 0, "Vermelho (CMD)");
+        else if (cmd == "Amarelo") setColor(255, 255, 0, "Amarelo (CMD)");
+        else if (cmd == "Azul") setColor(0, 0, 255, "Azul (CMD)");
+        // Os comandos de LED temporários serão sobrescritos pelo POT no próximo loop,
+        // a menos que você queira que eles permaneçam.
+    }
+
+    // Comandos de Ativação/Desativação de Sensores/Atuadores
+    if (cmd == "Ativar Temperatura") {
+        sensorTemperaturaAtivo = true;
+    } else if (cmd == "Desativar Temperatura") {
+        sensorTemperaturaAtivo = false;
+    } else if (cmd == "Ativar Detector") {
+        detectorAtivo = true;
+    } else if (cmd == "Desativar Detector") {
+        detectorAtivo = false;
+    } else if (cmd == "Ativar Buzzer") {
+        buzzerAtivo = true;
+    } else if (cmd == "Desativar Buzzer") {
+        buzzerAtivo = false;
+        noTone(PINO_BUZZER); // Garante que o buzzer pare imediatamente
+    }
+    
+    // Após qualquer comando que altere o estado, forçamos um envio de leituras
+    // para sincronizar o Dashboard.
+    if (cmd == "Ligar" || cmd == "Desligar" || cmd.indexOf("Ativar") != -1 || cmd.indexOf("Desativar") != -1) {
+        // Define o timestamp para forçar um novo envio no próximo ciclo do loop
+        // Correção: Usamos millis() aqui pois 'agora' não está no escopo desta função.
+        ultimoEnvioFirebase = millis() - intervaloEnvio; 
+    }
+}
+
+
+// ======== Leitura de Comandos (Polling HTTP GET) ========
+void lerComandosFirebase() {
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    HTTPClient http;
+    // URL para o nó 'comandos'
+    String url = String(FIREBASE_HOST) + firebasePathComandos;
+
+    http.begin(url);
+    int code = http.GET(); // Requisição GET para ler o JSON
+
+    if (code == 200) {
+        String payload = http.getString();
+        
+        // A busca é por "controle_manual":"[Comando]"
+        int start = payload.indexOf("\"controle_manual\":\"");
+        int end = payload.indexOf("\"", start + 19);
+
+        if (start != -1 && end != -1) {
+            String comandoRecebido = payload.substring(start + 19, end);
+
+            // Só processa se o comando for diferente do último (evita loops)
+            // ESTA É A PARTE QUE PROCESSA COMANDOS DA DASHBOARD
+            if (comandoRecebido != comandoAnterior) {
+                Serial.println(">>> Comando recebido do Firebase/Dashboard!");
+                processarComando(comandoRecebido);
+                comandoAnterior = comandoRecebido; // Salva o novo comando
+            }
+        }
+    } else if (code > 0) {
+        // Serial.print("Falha ao ler comandos HTTP: ");
+        // Serial.println(code);
+    }
+    http.end();
+}
+
+
+// ================= SETUP =================
+void setup() {
+    Serial.begin(115200);
+    Serial.println(F("Monitoramento com Firebase - ESP32"));
+
+    // Configura o pino do botão como entrada com resistor pull-up
+    // NOTA IMPORTANTE: Para INPUT_PULLUP, o botão deve ligar o pino 32 ao GND (Terra).
+    // NÃO ligar ao 3.3V (VCC).
+    pinMode(PINO_BOTAO, INPUT_PULLUP); 
+    pinMode(PINO_R, OUTPUT);
+    pinMode(PINO_G, OUTPUT);
+    pinMode(PINO_B, OUTPUT);
+    pinMode(PINO_BUZZER, OUTPUT);
+
+    dht.begin();
+    
+    // Conecta ao Wi-Fi logo no setup
+    conectarWiFi(); 
+
+    // Inicializa o estado desligado (LED apagado)
+    setColor(0, 0, 0, "Desligado");
+    noTone(PINO_BUZZER);
+}
+
+// ================= LOOP =================
+void loop() {
+    unsigned long agora = millis();
+    String estadoSistemaStr = sistemaLigado ? "Ligado" : "Desligado";
+    
+    // Variáveis que serão enviadas para o Firebase (inicializadas em 0 ou Desligado)
+    float temperatura = 0.0;
+    int luminosidade = 0;
+    String corAtualLED = corLED; // Mantém a cor atual (pode ser "Desligado")
+    bool perigo = false;
+
+    // ------------------------------------------------------------------
+    // 1. LÓGICA DO BOTÃO FÍSICO (Com Debounce)
+    // ------------------------------------------------------------------
+    int estadoLeituraBotao = digitalRead(PINO_BOTAO);
+
+    // Verifica se o tempo de debounce passou
+    if ((agora - ultimoDebounceTime) > debounceDelay) {
+        if (estadoLeituraBotao != estadoBotaoAnterior) {
+            estadoBotaoAnterior = estadoLeituraBotao;
+
+            // Detecta a Borda de Descida (Botão Pressionado: HIGH -> LOW)
+            if (estadoLeituraBotao == LOW) {
+                Serial.println(">>> Botão Físico DETECTADO (LOW): SINCRONIZANDO ESTADO!");
+                
+                // 1. Determina o comando oposto ao estado atual
+                String novoComando = sistemaLigado ? "Desligar" : "Ligar";
+
+                // 2. Envia o comando completo para o Firebase (sincroniza o Dashboard)
+                enviarComandoParaFirebase(novoComando);
+                
+                // 3. ***** SOLUÇÃO: PROCESSA O COMANDO LOCALMENTE IMEDIATAMENTE *****
+                // Isso atualiza 'sistemaLigado', atuadores e força um envio de leitura.
+                processarComando(novoComando); 
+                
+                // 4. ***** SOLUÇÃO: ATUALIZA O comandoAnterior IMEDIATAMENTE *****
+                // Evita que o comando que acabamos de enviar seja processado novamente no próximo polling.
+                comandoAnterior = novoComando;
+            }
+        }
+    }
+    
+    // DEBUG CRÍTICO: Movemos a atualização do debounce para fora do bloco de ação para
+    // garantir que o timer seja atualizado sempre que o pino mudar (mesmo que seja ruído).
+    if (estadoLeituraBotao != estadoBotaoAnterior) {
+        // Serial.print("DEBUG Botao: Leitura mudou para ");
+        // Serial.println(estadoLeituraBotao == HIGH ? "HIGH" : "LOW");
+        ultimoDebounceTime = agora; // Reinicia o timer do debounce
+    }
+
+    // ------------------------------------------------------------------
+    // 2. LÓGICA DE SENSORES E ATUADORES (Só roda se o sistema estiver ligado)
+    // ------------------------------------------------------------------
+    if (!sistemaLigado) {
+        // Se desligado (via botão físico ou dashboard), garante o estado inativo
+        setColor(0, 0, 0, "Desligado"); 
+        noTone(PINO_BUZZER);
+        // Os valores de temperatura e luminosidade permanecem 0.0 e 0, respectivamente.
+    } else {
+        // CÓDIGO EXECUTADO APENAS SE O SISTEMA ESTIVER LIGADO
+        
+        // ------- LEITURA DOS SENSORES (CONTROLADA PELOS COMANDOS) -------
+        if (sensorTemperaturaAtivo) {
+            temperatura = dht.readTemperature();
+            if (isnan(temperatura)) {
+                // Serial.println(F("Falha na leitura do sensor DHT! Usando 0.0."));
+                temperatura = 0.0;
+            }
+        } // Se desativado, 'temperatura' permanece 0.0
+
+        if (detectorAtivo) {
+            // Utilizamos a leitura do Fotorresistor para a luminosidade
+            luminosidade = analogRead(PINO_FOTOR);
+            // E o Potenciômetro para o controle de cor
+            int pot = analogRead(PINO_POT);
+
+            // Se a cor não foi mudada por um comando manual ("(CMD)") no loop anterior, retorna ao POT
+            if (corLED.indexOf("(CMD)") == -1) {
+                if       (pot < 800)   setColor(0, 0, 255, "Azul");
+                else if (pot < 1600)   setColor(128, 0, 255, "Lilas");
+                else if (pot < 2400)   setColor(255, 0, 0, "Vermelho");
+                else if (pot < 3200)   setColor(255, 128, 0, "Laranja");
+                else                   setColor(255, 255, 255, "Branco");
+            }
+
+        } // Se desativado, 'luminosidade' permanece 0
+
+        // Atualiza a variável de string da cor atual (pode ter sido alterada por setColor)
+        corAtualLED = corLED;
+        
+        // ------- BUZZER (CONTROLADO PELO COMANDO E TEMPERATURA) -------
+        perigo = (temperatura < 0 || temperatura > 25);
+        if (buzzerAtivo) {
+            // O buzzer toca APENAS se estiver ativo PELO COMANDO E se houver PERIGO
+            if (perigo) {
+                tone(PINO_BUZZER, 1000); // Toca em 1kHz
+            } else {
+                noTone(PINO_BUZZER);
+            }
+        } else {
+            noTone(PINO_BUZZER); // Garante que esteja desligado se o comando for Desativar Buzzer
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3. BLOCO DE COMUNICAÇÃO (Executado sempre)
+    // ------------------------------------------------------------------
+
+    // --- POLING DE COMANDOS (A CADA 2 SEGUNDOS) ---
+    if (agora - ultimoPolling >= intervaloPolling) {
+        ultimoPolling = agora;
+        lerComandosFirebase();
+    }
+    
+    // --- MONITOR SERIAL E ENVIO PARA FIREBASE (A CADA 5 SEGUNDOS, ou forçado) ---
+    if (agora - ultimoEnvioFirebase >= intervaloEnvio) {
+        ultimoEnvioFirebase = agora;
+
+        // Monitor Serial
+        Serial.println("====== STATUS (ENVIO) ======");
+        Serial.print("Sistema: ");
+        Serial.println(estadoSistemaStr);
+        Serial.print("Temperatura: ");
+        Serial.println(temperatura);
+        Serial.print("Luminosidade (Raw): ");
+        Serial.println(luminosidade);
+        Serial.print("Cor do LED: "); 
+        Serial.println(corAtualLED);
+        Serial.print("Temp/Detec/Buzzer Ativos: ");
+        Serial.print(sensorTemperaturaAtivo); Serial.print("/");
+        Serial.print(detectorAtivo); Serial.print("/");
+        Serial.println(buzzerAtivo); 
+        Serial.println("============================\n");
+        
+        // Envio para Firebase (usa os valores atuais de temp/luz/cor/estado)
+        enviarLeiturasParaFirebase(temperatura, luminosidade, corAtualLED, estadoSistemaStr);
+    }
+}
