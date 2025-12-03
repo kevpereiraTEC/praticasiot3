@@ -1,0 +1,199 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// ===== PINAGEM =====
+#define POT_PIN 34
+#define LDR_PIN 35
+#define BUTTON_PIN 14
+#define LED_R 27
+#define LED_G 26
+#define LED_B 25
+
+// ===== VARIÁVEIS DE ESTADO =====
+bool systemOn = true;
+bool lastButtonState = HIGH;
+
+// Para impressão periódica
+unsigned long lastPrint = 0;
+
+// ===== CORES =====
+int potR = 0, potG = 0, potB = 0;
+
+// Override temporário vindo do MQTT
+bool overrideColor = false;
+unsigned long overrideEndTime = 0;
+
+// ===== WIFI =====
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
+// ===== MQTT =====
+const char* mqtt_server = "broker.hivemq.com";
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// ======== FUNÇÕES ========
+
+// Ajusta cor do LED RGB
+void setColor(int r, int g, int b) {
+  analogWrite(LED_R, r);
+  analogWrite(LED_G, g);
+  analogWrite(LED_B, b);
+}
+
+// Converte potenciômetro → RGB
+void updatePotColor() {
+  int potVal = analogRead(POT_PIN);
+
+  potR = map(potVal, 0, 4095, 0, 255);
+  potG = map(potVal, 0, 4095, 255, 0);
+  potB = (potR + potG) / 2;
+}
+
+// Nome da cor (para print)
+String getColorName(int r, int g, int b) {
+  if (r > g && r > b) return "Vermelho";
+  if (g > r && g > b) return "Verde";
+  if (b > r && b > g) return "Azul";
+  return "Mistura RGB";
+}
+
+// ======== WIFI ========
+void setup_wifi() {
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando ao WiFi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(300);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi conectado!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+// ======== CALLBACK MQTT ========
+void callback(char* topic, byte* payload, unsigned int length) {
+
+  String msg;
+  for (int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+
+  msg.toLowerCase();
+  Serial.print("MQTT recebido: ");
+  Serial.println(msg);
+
+  if (msg == "ligar") {
+    systemOn = true;
+  }
+  else if (msg == "desligar") {
+    systemOn = false;
+  }
+  else if (msg == "vermelho" || msg == "azul" || msg == "amarelo") {
+
+    overrideColor = true;
+    overrideEndTime = millis() + 1000;  // mantém cor do MQTT por 1s
+
+    if (msg == "vermelho") setColor(255, 0, 0);
+    if (msg == "azul")     setColor(0, 0, 255);
+    if (msg == "amarelo")  setColor(255, 255, 0);
+  }
+}
+
+// ======== reconectar MQTT ========
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Conectando ao MQTT...");
+    if (client.connect("ESP32-RGB-POT")) {
+      Serial.println(" conectado!");
+      client.subscribe("esp32/comandos");
+    } else {
+      Serial.print("Falha, rc=");
+      Serial.print(client.state());
+      Serial.println(" tentando novamente em 2s");
+      delay(2000);
+    }
+  }
+}
+
+// ======== SETUP ========
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(POT_PIN, INPUT);
+  pinMode(LDR_PIN, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  pinMode(LED_R, OUTPUT);
+  pinMode(LED_G, OUTPUT);
+  pinMode(LED_B, OUTPUT);
+
+  setColor(0, 0, 0);
+
+  setup_wifi();
+
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+}
+
+// ======== LOOP PRINCIPAL ========
+void loop() {
+  // MQTT
+  if (!client.connected()) reconnect();
+  client.loop();
+
+  // ===== BOTÃO liga/desliga =====
+  bool buttonState = digitalRead(BUTTON_PIN);
+  if (buttonState == LOW && lastButtonState == HIGH) {
+    systemOn = !systemOn;
+    delay(200);
+  }
+  lastButtonState = buttonState;
+
+  // Se sistema desligado → LED apagado
+  if (!systemOn) {
+    setColor(0, 0, 0);
+  } 
+  else {
+    // Se cor MQTT está ativa → usar ela até expirar o tempo
+    if (overrideColor) {
+      if (millis() > overrideEndTime) {
+        overrideColor = false;  // sair do override
+      }
+    }
+
+    // Se não estamos em override → usar cor do potenciômetro
+    if (!overrideColor) {
+      updatePotColor();
+      setColor(potR, potG, potB);
+    }
+  }
+
+  // ===== LEITURA DO LDR =====
+  int ldrValue = analogRead(LDR_PIN);
+
+  // ===== PRINT A CADA 5 SEGUNDOS =====
+  if (millis() - lastPrint >= 5000) {
+    lastPrint = millis();
+
+    Serial.println("========== STATUS ==========");
+    Serial.print("Sistema: ");
+    Serial.println(systemOn ? "ON" : "OFF");
+
+    Serial.print("Cor LED: ");
+    if (!systemOn) {
+      Serial.println("Desligado");
+    } else if (overrideColor) {
+      Serial.println("Comando MQTT (1s)");
+    } else {
+      Serial.println(getColorName(potR, potG, potB));
+    }
+
+    Serial.print("LDR: ");
+    Serial.println(ldrValue);
+
+    Serial.println("============================\n");
+  }
+}
