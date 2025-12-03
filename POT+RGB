@@ -1,0 +1,66 @@
+// Pinos do LED RGB (ANODO COMUM)
+#define PIN_R 25
+#define PIN_G 26
+#define PIN_B 27
+
+// Pino do potenciômetro
+#define POT_PIN 34
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(PIN_R, OUTPUT);
+  pinMode(PIN_G, OUTPUT);
+  pinMode(PIN_B, OUTPUT);
+
+  pinMode(POT_PIN, INPUT);
+
+  Serial.println("Controle RGB via potenciômetro iniciado!");
+}
+
+void loop() {
+  // Lê o potenciômetro (0–4095 no ESP32)
+  int potValue = analogRead(POT_PIN);
+
+  // Converte para 0–255
+  int intensity = map(potValue, 0, 4095, 0, 255);
+
+  // Exemplo simples:
+  // A cor muda em degradê de:
+  //  Vermelho → Verde → Azul conforme gira o potenciômetro
+
+  int r, g, b;
+
+  if (intensity < 85) {
+    // Vermelho para Verde
+    r = 255 - (intensity * 3);
+    g = intensity * 3;
+    b = 0;
+  } else if (intensity < 170) {
+    // Verde para Azul
+    r = 0;
+    g = 255 - ((intensity - 85) * 3);
+    b = (intensity - 85) * 3;
+  } else {
+    // Azul para Vermelho
+    r = (intensity - 170) * 3;
+    g = 0;
+    b = 255 - ((intensity - 170) * 3);
+  }
+
+  // Para LED de anodo comum: saída invertida
+  analogWrite(PIN_R, 255 - r);
+  analogWrite(PIN_G, 255 - g);
+  analogWrite(PIN_B, 255 - b);
+
+  Serial.print("Pot: ");
+  Serial.print(potValue);
+  Serial.print("  → R:");
+  Serial.print(r);
+  Serial.print(" G:");
+  Serial.print(g);
+  Serial.print(" B:");
+  Serial.println(b);
+
+  delay(10);
+}
