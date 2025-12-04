@@ -1,0 +1,87 @@
+// Definições de Pinos para o LED RGB (Anodo Comum)
+// Obs: Se for Catodo Comum, remova a inversão (255 - r) na função analogWrite.
+#define PIN_R 25 
+#define PIN_G 26 
+#define PIN_B 27 
+
+// Definições de Pinos para o Sensor Ultrassônico (HC-SR04)
+#define ECHO_PIN 34 // Pino Echo (Entrada)
+#define TRIG_PIN 32 // Pino Trig (Saída)
+
+// Distância Máxima de Interesse (em cm)
+// Objetos a 200cm ou mais serão sempre Verdes
+const int MAX_DISTANCE_CM = 200;
+
+void setup() {
+  Serial.begin(115200);
+
+  // Configura os pinos do LED como Saída
+  pinMode(PIN_R, OUTPUT);
+  pinMode(PIN_G, OUTPUT);
+  pinMode(PIN_B, OUTPUT);
+
+  // Configura os pinos do Sensor Ultrassônico
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  Serial.println("Controle RGB via Ultrassônico iniciado! (Vermelho = Perto; Verde = Longe)");
+}
+
+// Função que mede a distância em centímetros
+long measureDistance() {
+  // Garante que o Trig Pin está em LOW
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+
+  // Envia um pulso de 10us para o Trigger
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // Mede a duração do pulso de retorno no Echo Pin
+  long duration = pulseIn(ECHO_PIN, HIGH);
+
+  // Calcula a distância: Duração / 58 (Velocidade do som em us/cm)
+  long distance_cm = duration * 0.034 / 2; 
+
+  return distance_cm;
+}
+
+void loop() {
+  int distance = measureDistance();
+  
+  // Limita a distância máxima para 200cm, ignorando leituras maiores.
+  if (distance > MAX_DISTANCE_CM) {
+    distance = MAX_DISTANCE_CM;
+  }
+  
+  // Mapeia a distância para a intensidade (0 a 255).
+  // Se a distância for 0, intensity = 255 (vermelho puro)
+  // Se a distância for 200, intensity = 0 (verde puro)
+  
+  // O Vermelho é inversamente proporcional à distância
+  int r = map(distance, 0, MAX_DISTANCE_CM, 255, 0);
+  
+  // O Verde é diretamente proporcional à distância
+  int g = map(distance, 0, MAX_DISTANCE_CM, 0, 255);
+  
+  // O Azul fica sempre desligado neste esquema de cores
+  int b = 0;
+
+  // --- Saída para LED (Anodo Comum) ---
+  // Inverte a saída: 255 = Desligado (LOW); 0 = Ligado (HIGH)
+  analogWrite(PIN_R, 255 - r);
+  analogWrite(PIN_G, 255 - g);
+  analogWrite(PIN_B, 255 - b);
+
+  Serial.print("Distância: ");
+  Serial.print(distance);
+  Serial.print(" cm -> R:");
+  Serial.print(r);
+  Serial.print(" G:");
+  Serial.print(g);
+  Serial.print(" B:");
+  Serial.println(b);
+
+  delay(50); // Delay menor para leitura mais fluida
+}
